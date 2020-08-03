@@ -29,7 +29,7 @@ type Node struct {
 	mu             sync.Mutex
 }
 
-func (n *Node) NewNode() *Node {
+func NewNode() *Node {
 	return &Node{
 		ctx: context.TODO(),
 	}
