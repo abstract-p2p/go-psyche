@@ -44,7 +44,7 @@ func (n *Node) NewEdge() Interface {
 }
 
 // E.g. connect to LAN multicast
-func (n *Node) ConnectEdge(edge Interface) {
+func (n *Node) Attach(edge Interface) {
 	n.connectedEdges = append(n.connectedEdges, edge)
 	go n.acceptMsgs(edge)
 }
