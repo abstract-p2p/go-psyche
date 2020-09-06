@@ -17,9 +17,11 @@ var (
 	sepRetNewLine = []byte("\r\n")
 	sepNewLine    = []byte("\n")
 
-	opFormatPub   = "PUB <subject> <#bytes>\n<payload>\n"
-	opFormatSub   = "SUB <subject>\n"
-	opFormatUnsub = "UNSUB <subject>\n"
+	payloadPlaceHolder = "<payload>"
+	payloadFormat      = payloadPlaceHolder + "\n"
+	opFormatPub        = "PUB <subject> <#bytes>\n" + payloadFormat
+	opFormatSub        = "SUB <subject>\n"
+	opFormatUnsub      = "UNSUB <subject>\n"
 )
 
 type DecoderError struct {
@@ -29,11 +31,11 @@ type DecoderError struct {
 
 func (err DecoderError) Error() string {
 	if len(err.Expected) == 1 {
-		return fmt.Sprintf("expected %q, but got %q", err.Expected[0], err.Actual)
+		return fmt.Sprintf("bad input: %q, use format: %q", err.Actual, err.Expected[0])
 	}
 
 	exp := strings.Join(err.Expected, ", ")
-	return fmt.Sprintf("expected one of %s, but got %s", exp, err.Actual)
+	return fmt.Sprintf("bad input: %s, use one of %s", err.Actual, exp)
 }
 
 var ErrWriterClosed = errors.New("writer is closed")
@@ -60,7 +62,7 @@ type Decoder struct {
 
 	protocolError  bool
 	copyingPayload bool
-	readingFromBuf bool
+	moreToParse    bool
 }
 
 func NewDecoder(edge Interface) *Decoder {
@@ -72,15 +74,54 @@ func NewDecoder(edge Interface) *Decoder {
 	}
 }
 
-func (d *Decoder) copyPayload() {
+func (d *Decoder) closePayload() error {
+	// find separator
+	i, sep := indexAny(
+		d.buf.Bytes(),
+		[][]byte{sepRetNewLine, sepNewLine},
+	)
+
+	// validate separator
+	if i > 0 || (i < 0 && len(d.buf.Bytes()) >= 2) {
+		return DecoderError{
+			Expected: []string{payloadFormat},
+			Actual:   payloadPlaceHolder + string(d.buf.Bytes()[:2]),
+		}
+	} else if i < 0 {
+		d.moreToParse = false
+		return nil
+	}
+
+	// read separator
+	d.buf.Next(len(sep))
+
+	// publish payload
+	d.edge.Pub(d.subject, d.payload)
+	d.copyingPayload = false
+	return nil
+}
+
+func (d *Decoder) copyPayload() error {
+	if d.payloadLen == 0 {
+		return d.closePayload()
+	}
+
+	// read from buf
 	chunk := d.buf.Next(d.payloadLen)
+	if len(chunk) == 0 {
+		d.moreToParse = false
+		return nil
+	}
+
+	// append to payload
 	d.payload = append(d.payload, chunk...)
 	d.payloadLen -= len(chunk)
 
 	if d.payloadLen == 0 {
-		d.edge.Pub(d.subject, d.payload)
-		d.copyingPayload = false
+		return d.closePayload()
 	}
+
+	return nil
 }
 
 func (d *Decoder) parseLine() error {
@@ -90,7 +131,7 @@ func (d *Decoder) parseLine() error {
 	)
 
 	if idx < 0 {
-		d.readingFromBuf = false
+		d.moreToParse = false
 		return nil
 	}
 
@@ -104,16 +145,16 @@ func (d *Decoder) parseLine() error {
 	case opPub:
 		if len(parts) != 3 {
 			return DecoderError{
-				Actual:   string(line),
 				Expected: []string{opFormatPub},
+				Actual:   string(line),
 			}
 		}
 
 		i, convErr := strconv.Atoi(string(parts[2]))
 		if convErr != nil {
 			return DecoderError{
-				Actual:   string(line),
 				Expected: []string{opFormatPub},
+				Actual:   string(line),
 			}
 		}
 
@@ -126,8 +167,8 @@ func (d *Decoder) parseLine() error {
 	case opSub:
 		if len(parts) != 2 {
 			return DecoderError{
-				Actual:   string(line),
 				Expected: []string{opFormatSub},
+				Actual:   string(line),
 			}
 		}
 
@@ -136,8 +177,8 @@ func (d *Decoder) parseLine() error {
 	case opUnsub:
 		if len(parts) != 2 {
 			return DecoderError{
-				Actual:   string(line),
 				Expected: []string{opFormatUnsub},
+				Actual:   string(line),
 			}
 		}
 
@@ -145,8 +186,8 @@ func (d *Decoder) parseLine() error {
 
 	default:
 		return DecoderError{
-			Actual:   d.opType,
 			Expected: []string{opPub, opSub, opUnsub},
+			Actual:   opType,
 		}
 	}
 
@@ -163,18 +204,20 @@ func (d *Decoder) Write(p []byte) (n int, err error) {
 		return
 	}
 
-	d.readingFromBuf = true
+	d.moreToParse = true
 
-	for d.readingFromBuf {
+	for d.moreToParse {
 		if d.copyingPayload {
-			d.copyPayload()
+			if err = d.copyPayload(); err != nil {
+				d.protocolError = true
+				return
+			}
 		} else {
-			err = d.parseLine()
+			if err = d.parseLine(); err != nil {
+				d.protocolError = true
+				return
+			}
 		}
-	}
-
-	if err != nil {
-		d.protocolError = true
 	}
 
 	return

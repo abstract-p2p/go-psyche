@@ -21,6 +21,6 @@ func EncodeMsg(out []byte, m *Message) []byte {
 	return append(out, '\n')
 }
 
-func EncodeError(out []byte, err error) []byte {
+func EncodeErr(out []byte, err error) []byte {
 	return append(out, []byte(fmt.Sprintf("-ERR %s\n", err.Error()))...)
 }

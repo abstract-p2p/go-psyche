@@ -79,8 +79,9 @@ func TestDecoder(t *testing.T) {
 			m.AssertCalled(t, "Unsub", "foo")
 		},
 	}, {
-		in: "SUB foo\nUNSUB bar\n",
+		in: "PUB foo 3\nbar\nSUB foo\nUNSUB bar\n",
 		expect: func(t *testing.T, m *MockEdge) {
+			m.AssertCalled(t, "Pub", "foo", []byte("bar"))
 			m.AssertCalled(t, "Sub", "foo")
 			m.AssertCalled(t, "Unsub", "bar")
 		},
@@ -107,22 +108,3 @@ func TestDecoderInvalidOp(t *testing.T) {
 		Actual:   "NOSUCHOP",
 	}, err)
 }
-
-// func TestDecoderNoNewLines(t *testing.T) {
-// 	decoder := NewDecoder(nil)
-
-// 	_, err := io.Copy(decoder, bytes.NewReader([]byte("SUB fooUNSUB foo")))
-// 	assert.Equal(t, DecoderError{
-// 		Expected: []string{opFormatSub},
-// 		Actual:   "SUB fooUNSUB foo",
-// 	}, err)
-
-// 	decoder = NewDecoder(nil)
-
-// 	_, err = io.Copy(decoder, bytes.NewReader([]byte("PUB foo 3barSUB foo")))
-// 	assert.Equal(t, &strconv.NumError{
-// 		Func: "Atoi",
-// 		Num:  "3barSUB",
-// 		Err:  strconv.ErrSyntax,
-// 	}, err)
-// }

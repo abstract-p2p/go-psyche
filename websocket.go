@@ -53,6 +53,7 @@ func (h *WebsocketHandler) readFromConn(ctx context.Context, c *websocket.Conn, 
 
 		_, err = io.Copy(dec, r)
 		if err != nil {
+			c.Write(ctx, websocket.MessageBinary, EncodeErr(nil, err))
 			log.Println(err)
 			return
 		}
