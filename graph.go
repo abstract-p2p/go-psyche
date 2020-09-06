@@ -23,21 +23,23 @@ type Interface interface {
 }
 
 type Node struct {
+	info           map[string]interface{}
 	ctx            context.Context
 	connectedEdges []Interface
 	createdEdges   []*pipe
 	mu             sync.Mutex
 }
 
-func NewNode() *Node {
+func NewNode(info map[string]interface{}) *Node {
 	return &Node{
-		ctx: context.TODO(),
+		info: info,
+		ctx:  context.TODO(),
 	}
 }
 
 // E.g. to serve a websocket connection
 func (n *Node) NewEdge() Interface {
-	pipe := newPipe()
+	pipe := newPipe(n.info)
 	n.createdEdges = append(n.createdEdges, pipe)
 	go n.acceptPubs(pipe)
 	return pipe

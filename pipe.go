@@ -6,14 +6,16 @@ import (
 )
 
 type pipe struct {
+	info         map[string]interface{}
 	pubCh, msgCh chan *Message
 	subjects     map[string]struct{}
 	mu           sync.Mutex
 	closeCh      chan struct{}
 }
 
-func newPipe() *pipe {
+func newPipe(info map[string]interface{}) *pipe {
 	return &pipe{
+		info:     info,
 		pubCh:    make(chan *Message, 8),
 		msgCh:    make(chan *Message, 8),
 		subjects: map[string]struct{}{},
@@ -41,7 +43,7 @@ func (p *pipe) Unsub(subject string) {
 }
 
 func (p *pipe) Info() map[string]interface{} {
-	return nil
+	return p.info
 }
 
 func (p *pipe) ReadMsg(ctx context.Context) (*Message, error) {
