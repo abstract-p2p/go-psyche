@@ -26,9 +26,9 @@ func EncodeErr(out []byte, err error) []byte {
 }
 
 func EncodePing(out []byte) []byte {
-	return append(out, []byte("PING")...)
+	return append(out, []byte("PING\n")...)
 }
 
 func EncodePong(out []byte) []byte {
-	return append(out, []byte("PONG")...)
+	return append(out, []byte("PONG\n")...)
 }
