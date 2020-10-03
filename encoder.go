@@ -24,3 +24,11 @@ func EncodeMsg(out []byte, m *Message) []byte {
 func EncodeErr(out []byte, err error) []byte {
 	return append(out, []byte(fmt.Sprintf("-ERR %s\n", err.Error()))...)
 }
+
+func EncodePing(out []byte) []byte {
+	return append(out, []byte("PING")...)
+}
+
+func EncodePong(out []byte) []byte {
+	return append(out, []byte("PONG")...)
+}

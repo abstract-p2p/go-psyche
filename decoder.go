@@ -12,6 +12,8 @@ var (
 	opPub   = "PUB"
 	opSub   = "SUB"
 	opUnsub = "UNSUB"
+	opPing  = "PING"
+	opPong  = "PONG"
 
 	sepSpace      = []byte(" ")
 	sepRetNewLine = []byte("\r\n")
@@ -22,6 +24,8 @@ var (
 	opFormatPub        = "PUB <subject> <#bytes>\n" + payloadFormat
 	opFormatSub        = "SUB <subject>\n"
 	opFormatUnsub      = "UNSUB <subject>\n"
+	opFormatPing       = "PING\n"
+	opFormatPong       = "PONG\n"
 )
 
 type DecoderError struct {
@@ -35,23 +39,22 @@ func (err DecoderError) Error() string {
 	}
 
 	exp := strings.Join(err.Expected, ", ")
-	return fmt.Sprintf("bad input: %s, use one of %s", err.Actual, exp)
+	return fmt.Sprintf("bad input: %q, use one of %s", err.Actual, exp)
 }
 
 var ErrWriterClosed = errors.New("writer is closed")
 
-func indexAny(bts []byte, seps [][]byte) (int, []byte) {
-	for _, s := range seps {
-		i := bytes.Index(bts, s)
-		if i >= 0 {
-			return i, s
-		}
-	}
-	return -1, nil
+type Pinger interface {
+	Ping()
 }
 
+type PingerFunc func()
+
+func (p PingerFunc) Ping() { p() }
+
 type Decoder struct {
-	edge Interface
+	edge   Interface
+	pinger Pinger
 
 	buf *bytes.Buffer
 
@@ -65,13 +68,24 @@ type Decoder struct {
 	moreToParse    bool
 }
 
-func NewDecoder(edge Interface) *Decoder {
+func NewDecoder(edge Interface, pinger Pinger) *Decoder {
 	return &Decoder{
-		edge: edge,
+		edge:   edge,
+		pinger: pinger,
 
 		buf:        new(bytes.Buffer),
 		payloadLen: -1,
 	}
+}
+
+func indexAny(bts []byte, seps [][]byte) (int, []byte) {
+	for _, s := range seps {
+		i := bytes.Index(bts, s)
+		if i >= 0 {
+			return i, s
+		}
+	}
+	return -1, nil
 }
 
 func (d *Decoder) closePayload() error {
@@ -183,6 +197,26 @@ func (d *Decoder) parseLine() error {
 		}
 
 		d.edge.Unsub(string(parts[1]))
+
+	case opPing:
+		if len(parts) != 1 {
+			return DecoderError{
+				Expected: []string{opFormatPing},
+				Actual:   string(line),
+			}
+		}
+
+		if d.pinger != nil {
+			d.pinger.Ping()
+		}
+
+	case opPong:
+		if len(parts) != 1 {
+			return DecoderError{
+				Expected: []string{opFormatPong},
+				Actual:   string(line),
+			}
+		}
 
 	default:
 		return DecoderError{

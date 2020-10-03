@@ -2,9 +2,11 @@ package psyche
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -19,41 +21,102 @@ func NewWebsocketHandler(node *Node) *WebsocketHandler {
 	}
 }
 
-func (h *WebsocketHandler) writeToConn(ctx context.Context, c *websocket.Conn, e Interface) {
-	var buf []byte
-	buf = EncodeInfo(buf[:0], e.Info())
-	if err := c.Write(ctx, websocket.MessageBinary, buf); err != nil {
-		log.Println(err)
-		return
-	}
+type handledConn struct {
+	ctx  context.Context
+	conn *websocket.Conn
+	edge Interface
+
+	readActivityCh chan struct{}
+}
+
+func (hc *handledConn) pingAndTimeout(interval time.Duration, maxOutstanding int) {
+	var (
+		pingTimer   = time.NewTimer(interval)
+		pingMsg     = EncodePing(nil)
+		outstanding int
+	)
+	defer pingTimer.Stop()
 
 	for {
-		m, err := e.ReadMsg(ctx)
+		select {
+		case <-pingTimer.C:
+			if outstanding >= maxOutstanding {
+				hc.conn.Close(
+					websocket.StatusGoingAway,
+					fmt.Sprintf(
+						"no response for %s",
+						(interval*time.Duration(maxOutstanding+1)).String(),
+					))
+				return
+			}
+
+			if err := hc.conn.Write(hc.ctx, websocket.MessageBinary, pingMsg); err != nil {
+				log.Println(err)
+				return
+			}
+			outstanding++
+
+			pingTimer.Reset(interval)
+
+		case <-hc.readActivityCh:
+			outstanding = 0
+
+			if !pingTimer.Stop() {
+				<-pingTimer.C
+			}
+			pingTimer.Reset(interval)
+
+		case <-hc.ctx.Done():
+			return
+		}
+	}
+}
+
+func (hc *handledConn) ping() {
+	hc.conn.Write(hc.ctx, websocket.MessageBinary, EncodePong(nil))
+}
+
+func (hc *handledConn) readAndDecode() {
+	dec := NewDecoder(hc.edge, PingerFunc(hc.ping))
+	for {
+		_, r, err := hc.conn.Reader(hc.ctx)
 		if err != nil {
 			log.Println(err)
 			return
 		}
 
-		buf = EncodeMsg(buf[:0], m)
-		if err = c.Write(ctx, websocket.MessageBinary, buf); err != nil {
+		select {
+		case hc.readActivityCh <- struct{}{}:
+		default:
+		}
+
+		_, err = io.Copy(dec, r)
+
+		if err != nil {
+			hc.conn.Write(hc.ctx, websocket.MessageBinary, EncodeErr(nil, err))
 			log.Println(err)
 			return
 		}
 	}
 }
 
-func (h *WebsocketHandler) readFromConn(ctx context.Context, c *websocket.Conn, e Interface) {
-	dec := NewDecoder(e)
+func (hc *handledConn) encodeAndWrite() {
+	var buf []byte
+	buf = EncodeInfo(buf[:0], hc.edge.Info())
+	if err := hc.conn.Write(hc.ctx, websocket.MessageBinary, buf); err != nil {
+		log.Println(err)
+		return
+	}
+
 	for {
-		_, r, err := c.Reader(ctx)
+		m, err := hc.edge.ReadMsg(hc.ctx)
 		if err != nil {
 			log.Println(err)
 			return
 		}
 
-		_, err = io.Copy(dec, r)
-		if err != nil {
-			c.Write(ctx, websocket.MessageBinary, EncodeErr(nil, err))
+		buf = EncodeMsg(buf[:0], m)
+		if err = hc.conn.Write(hc.ctx, websocket.MessageBinary, buf); err != nil {
 			log.Println(err)
 			return
 		}
@@ -74,8 +137,14 @@ func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	e := h.node.NewEdge()
 	defer e.Close()
 
-	ctx := r.Context()
+	hc := &handledConn{
+		ctx:            r.Context(),
+		conn:           c,
+		edge:           e,
+		readActivityCh: make(chan struct{}, 1),
+	}
 
-	go h.readFromConn(ctx, c, e)
-	h.writeToConn(ctx, c, e)
+	go hc.pingAndTimeout(30*time.Second, 2)
+	go hc.readAndDecode()
+	hc.encodeAndWrite()
 }
