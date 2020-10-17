@@ -11,6 +11,7 @@ type pipe struct {
 	subjects     map[string]struct{}
 	mu           sync.Mutex
 	closeCh      chan struct{}
+	err          error
 }
 
 func newPipe(info map[string]interface{}) *pipe {
@@ -46,17 +47,29 @@ func (p *pipe) Info() map[string]interface{} {
 	return p.info
 }
 
-func (p *pipe) ReadMsg(ctx context.Context) (*Message, error) {
+func (p *pipe) ReadMsg(ctx context.Context, msg *Message) bool {
+	if p.err != nil {
+		return false
+	}
+
 	for {
 		select {
 		case m := <-p.msgCh:
-			return m, nil
+			msg.Subject = m.Subject
+			msg.Payload = append(msg.Payload[:0], m.Payload...)
+			return true
 		case <-p.closeCh:
-			return nil, ErrInterfaceClosed
+			p.err = ErrInterfaceClosed
+			return false
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			p.err = ctx.Err()
+			return false
 		}
 	}
+}
+
+func (p *pipe) Err() error {
+	return p.err
 }
 
 func (p *pipe) Close() {

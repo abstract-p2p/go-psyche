@@ -108,18 +108,17 @@ func (hc *handledConn) encodeAndWrite() {
 		return
 	}
 
-	for {
-		m, err := hc.edge.ReadMsg(hc.ctx)
-		if err != nil {
+	var m Message
+	for hc.edge.ReadMsg(hc.ctx, &m) {
+		buf = EncodeMsg(buf[:0], &m)
+		if err := hc.conn.Write(hc.ctx, websocket.MessageBinary, buf); err != nil {
 			log.Println(err)
 			return
 		}
+	}
 
-		buf = EncodeMsg(buf[:0], m)
-		if err = hc.conn.Write(hc.ctx, websocket.MessageBinary, buf); err != nil {
-			log.Println(err)
-			return
-		}
+	if hc.edge.Err() != nil {
+		log.Println(hc.edge.Err())
 	}
 }
 
@@ -145,6 +144,6 @@ func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go hc.pingAndTimeout(30*time.Second, 2)
-	go hc.readAndDecode()
-	hc.encodeAndWrite()
+	go hc.encodeAndWrite()
+	hc.readAndDecode()
 }

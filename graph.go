@@ -14,11 +14,12 @@ type Message struct {
 }
 
 type Interface interface {
+	Info() map[string]interface{}
 	Pub(subject string, payload []byte)
 	Sub(subject string)
 	Unsub(subject string)
-	Info() map[string]interface{}
-	ReadMsg(ctx context.Context) (*Message, error)
+	ReadMsg(ctx context.Context, msg *Message) bool
+	Err() error
 	Close()
 }
 
@@ -81,11 +82,14 @@ func (n *Node) acceptPubs(p *pipe) {
 
 func (n *Node) acceptMsgs(edge Interface) {
 	defer n.removeEdge(edge)
-	for {
-		m, err := edge.ReadMsg(n.ctx)
-		if err != nil {
-			return
+
+	var msg Message
+	for edge.ReadMsg(n.ctx, &msg) {
+		m := &Message{
+			Subject: msg.Subject,
+			Payload: append(msg.Payload[:0:0], msg.Payload...),
 		}
+
 		n.broadcastMsg(m, edge, nil)
 	}
 }
