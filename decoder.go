@@ -220,7 +220,7 @@ func (d *Decoder) parseLine() error {
 
 	default:
 		return DecoderError{
-			Expected: []string{opPub, opSub, opUnsub},
+			Expected: []string{opPub, opSub, opUnsub, opPing, opPong},
 			Actual:   opType,
 		}
 	}
