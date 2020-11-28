@@ -8,18 +8,24 @@ import (
 type pipe struct {
 	info         map[string]interface{}
 	pubCh, msgCh chan *Message
-	subjects     map[string]struct{}
-	mu           sync.Mutex
-	closeCh      chan struct{}
-	err          error
+
+	subjects map[string]struct{}
+	mu       sync.Mutex
+
+	parent *Node
+
+	closeOnce sync.Once
+	closeCh   chan struct{}
+	err       error
 }
 
-func newPipe(info map[string]interface{}) *pipe {
+func newPipe(info map[string]interface{}, parent *Node) *pipe {
 	return &pipe{
 		info:     info,
 		pubCh:    make(chan *Message, 8),
 		msgCh:    make(chan *Message, 8),
 		subjects: map[string]struct{}{},
+		parent:   parent,
 		closeCh:  make(chan struct{}),
 	}
 }
@@ -35,11 +41,22 @@ func (p *pipe) Sub(subject string) {
 	p.mu.Lock()
 	p.subjects[subject] = struct{}{}
 	p.mu.Unlock()
+	p.parent.gatewaySub(subject)
 }
 
 func (p *pipe) Unsub(subject string) {
 	p.mu.Lock()
 	delete(p.subjects, subject)
+	p.mu.Unlock()
+	p.parent.gatewayUnsub(subject)
+}
+
+func (p *pipe) unsubAll() {
+	p.mu.Lock()
+	for s := range p.subjects {
+		delete(p.subjects, s)
+		p.parent.gatewayUnsub(s)
+	}
 	p.mu.Unlock()
 }
 
@@ -73,20 +90,30 @@ func (p *pipe) Err() error {
 }
 
 func (p *pipe) Close() {
-	close(p.closeCh)
+	p.unsubAll()
+	p.closeOnce.Do(func() {
+		close(p.closeCh)
+	})
 }
 
-func (p *pipe) msg(subject string, payload []byte) {
+func (p *pipe) msg(subject string, payload []byte) error {
 	p.mu.Lock()
 	_, ok := p.subjects[subject]
 	p.mu.Unlock()
+
 	if !ok {
-		return
+		// this edge is not subscribed to this subject
+		return nil
 	}
 
-	p.msgCh <- &Message{
+	select {
+	case p.msgCh <- &Message{
 		Subject: subject,
 		Payload: payload,
+	}:
+		return nil
+	case <-p.closeCh:
+		return ErrInterfaceClosed
 	}
 }
 

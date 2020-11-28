@@ -122,8 +122,22 @@ func (hc *handledConn) encodeAndWrite() {
 	}
 }
 
-func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+type WebsocketConn struct {
+	node *Node
+	w    http.ResponseWriter
+	r    *http.Request
+}
+
+func (wc *WebsocketConn) LocalNode() *Node {
+	return wc.node
+}
+
+func (wc *WebsocketConn) RemoteAddr() string {
+	return wc.r.RemoteAddr
+}
+
+func (wc *WebsocketConn) Serve() {
+	c, err := websocket.Accept(wc.w, wc.r, &websocket.AcceptOptions{
 		// TODO: don't
 		InsecureSkipVerify: true,
 	})
@@ -133,11 +147,11 @@ func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.Close(websocket.StatusInternalError, "the sky is falling")
 
-	e := h.node.NewEdge()
+	e := wc.node.NewEdge()
 	defer e.Close()
 
 	hc := &handledConn{
-		ctx:            r.Context(),
+		ctx:            wc.r.Context(),
 		conn:           c,
 		edge:           e,
 		readActivityCh: make(chan struct{}, 1),
@@ -146,4 +160,23 @@ func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go hc.pingAndTimeout(30*time.Second, 2)
 	go hc.encodeAndWrite()
 	hc.readAndDecode()
+}
+
+type contextKey struct {
+	key string
+}
+
+var contextKeyEdge = contextKey{key: "edge"}
+
+func (h *WebsocketHandler) Accept(w http.ResponseWriter, r *http.Request) *WebsocketConn {
+	gw := h.node.NewEdge()
+	return &WebsocketConn{
+		node: NewNode(gw.Info(), WithGateway(gw), AllowLocalDotSubjects()),
+		w:    w,
+		r:    r,
+	}
+}
+
+func (h *WebsocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.Accept(w, r).Serve()
 }

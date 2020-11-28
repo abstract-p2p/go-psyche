@@ -24,49 +24,98 @@ type Interface interface {
 }
 
 type Node struct {
-	info           map[string]interface{}
-	ctx            context.Context
-	connectedEdges []Interface
-	createdEdges   []*pipe
-	mu             sync.Mutex
+	info map[string]interface{}
+	ctx  context.Context
+
+	edges   []*pipe
+	edgesMu sync.Mutex
+
+	allowLocalDotSubjects bool
+	gateway               Interface
+
+	gatewaySubjects   map[string]int
+	gatewaySubjectsMu sync.Mutex
 }
 
-func NewNode(info map[string]interface{}) *Node {
-	return &Node{
+type NodeOption func(n *Node)
+
+// AllowLocalDotSubjects will allow subjects beginning with "." to be
+// published, but only on non-gateway (i.e. local) edges.
+func AllowLocalDotSubjects() func(n *Node) {
+	return func(n *Node) {
+		n.allowLocalDotSubjects = true
+	}
+}
+
+// WithGateway sets a gateway edge, to which all PUBs, SUBs and UNSUBs
+// received from locally created edges.
+//
+// The node will subscribe to a subject on gateway for as along as one
+// or more locally created edges are subscribed to that subject.
+func WithGateway(gw Interface) func(n *Node) {
+	return func(n *Node) {
+		n.gateway = gw
+	}
+}
+
+func NewNode(info map[string]interface{}, opts ...NodeOption) *Node {
+	n := &Node{
 		info: info,
 		ctx:  context.TODO(),
 	}
+
+	for _, opt := range opts {
+		opt(n)
+	}
+
+	if n.gateway != nil {
+		n.gatewaySubjects = map[string]int{}
+		go n.acceptMsgs(n.gateway)
+	}
+
+	return n
 }
 
 // E.g. to serve a websocket connection
 func (n *Node) NewEdge() Interface {
-	pipe := newPipe(n.info)
-	n.createdEdges = append(n.createdEdges, pipe)
+	pipe := newPipe(n.info, n)
+
+	n.edgesMu.Lock()
+	n.edges = append(n.edges, pipe)
+	n.edgesMu.Unlock()
+
 	go n.acceptPubs(pipe)
 	return pipe
 }
 
-// E.g. connect to LAN multicast
-func (n *Node) Attach(edge Interface) {
-	n.connectedEdges = append(n.connectedEdges, edge)
-	go n.acceptMsgs(edge)
-}
-
 func (n *Node) broadcastMsg(m *Message, fromEdge Interface, fromPipe *pipe) {
-	n.mu.Lock()
-	for _, e := range n.connectedEdges {
-		if e == fromEdge {
-			continue
-		}
-		e.Pub(m.Subject, m.Payload)
+	isDotSubject := m.Subject[0] == '.'
+
+	// allow dot subjects only if explicitly enabled
+	if isDotSubject && !n.allowLocalDotSubjects {
+		return
 	}
-	for _, e := range n.createdEdges {
+
+	n.edgesMu.Lock()
+	defer n.edgesMu.Unlock()
+
+	// send msg to the other edges
+	for _, e := range n.edges {
 		if e == fromPipe {
 			continue
 		}
 		e.msg(m.Subject, m.Payload)
 	}
-	n.mu.Unlock()
+
+	// never send dot subject messages to gateway
+	if isDotSubject {
+		return
+	}
+
+	// send msg to the gateway
+	if n.gateway != fromEdge {
+		n.gateway.Pub(m.Subject, m.Payload)
+	}
 }
 
 func (n *Node) acceptPubs(p *pipe) {
@@ -81,8 +130,6 @@ func (n *Node) acceptPubs(p *pipe) {
 }
 
 func (n *Node) acceptMsgs(edge Interface) {
-	defer n.removeEdge(edge)
-
 	var msg Message
 	for edge.ReadMsg(n.ctx, &msg) {
 		m := &Message{
@@ -95,29 +142,45 @@ func (n *Node) acceptMsgs(edge Interface) {
 }
 
 func (n *Node) removePipe(p *pipe) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	for i, e := range n.createdEdges {
+	n.edgesMu.Lock()
+	defer n.edgesMu.Unlock()
+	for i, e := range n.edges {
 		if e == p {
-			sl := n.createdEdges
+			sl := n.edges
 			sl[i] = sl[len(sl)-1]
 			sl = sl[:len(sl)-1]
-			n.createdEdges = sl
+			n.edges = sl
 			return
 		}
 	}
 }
 
-func (n *Node) removeEdge(edge Interface) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	for i, e := range n.connectedEdges {
-		if e == edge {
-			sl := n.connectedEdges
-			sl[i] = sl[len(sl)-1]
-			sl = sl[:len(sl)-1]
-			n.connectedEdges = sl
-			return
-		}
+func (n *Node) gatewaySub(subject string) {
+	if n.gateway == nil {
+		return
+	}
+
+	n.gatewaySubjectsMu.Lock()
+	n.gatewaySubjects[subject]++
+	count := n.gatewaySubjects[subject]
+	n.gatewaySubjectsMu.Unlock()
+
+	if count == 1 {
+		n.gateway.Sub(subject)
+	}
+}
+
+func (n *Node) gatewayUnsub(subject string) {
+	if n.gateway == nil {
+		return
+	}
+
+	n.gatewaySubjectsMu.Lock()
+	n.gatewaySubjects[subject]--
+	count := n.gatewaySubjects[subject]
+	n.gatewaySubjectsMu.Unlock()
+
+	if count == 0 {
+		n.gateway.Unsub(subject)
 	}
 }
